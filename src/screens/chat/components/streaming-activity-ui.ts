@@ -124,7 +124,8 @@ export function shouldAutoExpandHermesActivityCard({
   isStreaming: boolean
   toolCount: number
 }): boolean {
-  return isStreaming && toolCount > 0
+  // Keep the Activity/Working card collapsed by default; users can expand manually.
+  return false
 }
 
 export function shouldRenderStandaloneActivityMenu({
