@@ -13,6 +13,9 @@ import { join, resolve } from 'node:path'
  * directory at startup if it doesn't exist.
  */
 export function getStateDir(): string {
+  if (typeof window !== 'undefined') {
+    return ''
+  }
   const explicit = process.env.HERMES_WORKSPACE_STATE_DIR?.trim()
   if (explicit) return resolve(explicit)
 

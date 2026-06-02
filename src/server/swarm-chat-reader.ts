@@ -151,7 +151,7 @@ export function readWorkerMessages(profilePath: string, limit: number): SwarmCha
   }
   try {
     const raw = execFileSync(
-      'python3',
+      'python',
       ['-c', PYTHON_SCRIPT, dbPath, String(limit)],
       { encoding: 'utf-8', timeout: 5_000 },
     )

@@ -163,7 +163,7 @@ if last_row is not None:
 conn.close()
 print(json.dumps(out))
 `
-    const raw = execFileSync('python3', ['-c', script, dbPath], {
+    const raw = execFileSync('python', ['-c', script, dbPath], {
       encoding: 'utf-8',
       timeout: 3_000,
     })

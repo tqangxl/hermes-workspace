@@ -4,7 +4,7 @@ workers:
   name: Orchestrator
   role: Swarm Orchestrator / Greenlight Gate
   specialty: mission routing, task decomposition, handoffs, proof contracts, human approval gates
-  model: GPT-5.5
+  model: claude-opus-4-6-thinking
   mission: Decompose missions into safe, proof-bearing work and route to the right specialist while preserving human greenlight control.
   profile: orchestrator
   modes:
@@ -59,7 +59,7 @@ workers:
   name: KM Agent
   role: RAZSOC / GBrain Knowledge Steward
   specialty: RAZSOC, GBrain, Obsidian, TaskNotes, graph health, durable knowledge capture, drift audits
-  model: GPT-5.5
+  model: gemini-3.5-flash-low
   mission: Keep the operating brain coherent, searchable, and source-of-record aligned without polluting durable knowledge.
   profile: km-agent
   modes:
@@ -111,7 +111,7 @@ workers:
   name: Builder
   role: Scoped Implementation Agent
   specialty: focused implementation, tests, small diffs, integration fixes
-  model: GPT-5.5
+  model: claude-sonnet-4-6
   mission: Ship scoped product/code slices with tests, minimal diffs, and clear verification evidence.
   profile: builder
   modes:
@@ -161,7 +161,7 @@ workers:
   name: Reviewer
   role: Independent Review / Merge Gate
   specialty: security review, logic review, regression detection, quality gates
-  model: GPT-5.5
+  model: claude-sonnet-4-6-thinking
   mission: Independently review changes and block unsafe, untested, or logically broken work before it lands.
   profile: reviewer
   modes:
@@ -209,7 +209,7 @@ workers:
   name: QA
   role: Browser / Workflow / CLI Smoke Verification
   specialty: browser QA, workflow smoke tests, expected-vs-actual checks, regression reproduction
-  model: GPT-5.5
+  model: gemini-3.5-flash-low
   mission: Verify user-visible behavior with concrete smoke evidence and concise bug reports.
   profile: qa
   modes:
@@ -254,7 +254,7 @@ workers:
   name: Researcher
   role: Brain-first Research / Bounded Autoresearch
   specialty: GBrain-first lookup, external research, synthesis, source trails, bounded research loops
-  model: GPT-5.5
+  model: gemini-3.1-pro-high
   mission: Produce decision-grade research with brain-first context, external verification, and explicit uncertainty.
   profile: researcher
   modes:
@@ -308,7 +308,7 @@ workers:
   name: Ops Watch
   role: Local Infra / Runtime Health Watch
   specialty: gateway health, cron, MCP, workspace services, local process status, boring reliability
-  model: GPT-5.5
+  model: gemini-3.5-flash-low
   mission: Keep Hermes, Workspace, GBrain, gateway, cron, and local services observable and healthy with quiet, low-risk checks.
   profile: ops-watch
   modes:
@@ -356,7 +356,7 @@ workers:
   name: Maintainer
   role: Upstream Dependency / Patch Hygiene
   specialty: upstream tracking, local patch hygiene, dependency updates, PR/issue follow-through
-  model: GPT-5.5
+  model: gemini-3.1-pro-low
   mission: Keep local forks and upstream dependencies healthy without losing local patches or dirty-worktree context.
   profile: maintainer
   modes:
@@ -406,7 +406,7 @@ workers:
   name: Strategist
   role: Wedges / Bets / Kill Criteria
   specialty: operating plans, gstack-style wedges, strategy reviews, decision framing, kill criteria
-  model: GPT-5.5
+  model: claude-opus-4-6-thinking
   mission: Turn ambiguity into crisp wedges, bets, constraints, and kill criteria without over-planning.
   profile: strategist
   modes:
@@ -452,7 +452,7 @@ workers:
   name: Inbox Triage
   role: Capture / Discard / Route / Task Triage
   specialty: low-friction inbox processing, capture routing, task/research/defer decisions, durable-context filtering
-  model: GPT-5.5
+  model: gemini-3.5-flash-low
   mission: Route incoming material into discard, task, research, or durable brain capture with minimal overhead and no junk accumulation.
   profile: inbox-triage
   modes:

@@ -14,9 +14,10 @@ import { syncSwarmProfileModel } from '../../server/swarm-profile-config'
 function getProfilesDir(): string {
   const envHome = process.env.HERMES_HOME || process.env.CLAUDE_HOME
   if (envHome) {
-    const parts = envHome.split('/').filter(Boolean)
+    const parts = envHome.split(/[/\\]/).filter(Boolean)
     if (parts.length >= 2 && parts.at(-2) === 'profiles') {
-      return envHome.split('/').slice(0, -1).join('/')
+      const sep = envHome.includes('\\') ? '\\' : '/'
+      return envHome.split(/[/\\]/).slice(0, -1).join(sep)
     }
     return join(envHome, 'profiles')
   }
@@ -48,7 +49,7 @@ const TMUX_BIN_CANDIDATES = [
 
 function resolveTmuxBin(): string | null {
   for (const candidate of TMUX_BIN_CANDIDATES) {
-    if (candidate.includes('/')) {
+    if (candidate.includes('/') || candidate.includes('\\')) {
       // On this launchd-started Workspace, existsSync can incorrectly miss
       // Homebrew binaries and then execFile('tmux') fails with ENOENT because
       // PATH has been reshaped by pnpm. Prefer the stable absolute Homebrew
@@ -82,14 +83,18 @@ function validateWorkerId(value: string): boolean {
 
 const HERMES_BIN_CANDIDATES = [
   process.env.HERMES_CLI_BIN,
-  join(homedir(), '.hermes', 'hermes-agent', 'venv', 'bin', 'hermes'),
-  join(homedir(), '.local', 'bin', 'hermes'),
+  process.platform === 'win32'
+    ? join(homedir(), '.hermes', 'hermes-agent', 'venv', 'Scripts', 'hermes.exe')
+    : join(homedir(), '.hermes', 'hermes-agent', 'venv', 'bin', 'hermes'),
+  process.platform === 'win32'
+    ? join(homedir(), '.local', 'bin', 'hermes.exe')
+    : join(homedir(), '.local', 'bin', 'hermes'),
   'hermes',
 ].filter((value): value is string => Boolean(value))
 
 function resolveHermesBin(): string {
   for (const candidate of HERMES_BIN_CANDIDATES) {
-    if (candidate.includes('/')) {
+    if (candidate.includes('/') || candidate.includes('\\')) {
       if (existsSync(candidate)) return candidate
       continue
     }

@@ -80,9 +80,11 @@ export function resolveClaudeAgentDir(
 
 /** Find the `claude` CLI binary installed by Nous's installer (or on PATH). */
 export function resolveClaudeBinary(): string | null {
+  const isWin = process.platform === 'win32'
+  const binaryName = isWin ? 'claude.exe' : 'claude'
   const candidates = [
-    resolve(homedir(), '.claude', 'bin', 'claude'),
-    resolve(homedir(), '.local', 'bin', 'claude'),
+    resolve(homedir(), '.claude', 'bin', binaryName),
+    resolve(homedir(), '.local', 'bin', binaryName),
   ]
   for (const c of candidates) {
     if (existsSync(c)) return c
@@ -91,14 +93,18 @@ export function resolveClaudeBinary(): string | null {
 }
 
 export function resolveClaudePython(agentDir: string): string {
-  const venvPython = resolve(agentDir, '.venv', 'bin', 'python')
+  const isWin = process.platform === 'win32'
+  const pyBin = isWin ? 'python.exe' : 'python'
+  const binDir = isWin ? 'Scripts' : 'bin'
+
+  const venvPython = resolve(agentDir, '.venv', binDir, pyBin)
   if (existsSync(venvPython)) return venvPython
-  const uvVenv = resolve(agentDir, 'venv', 'bin', 'python')
+  const uvVenv = resolve(agentDir, 'venv', binDir, pyBin)
   if (existsSync(uvVenv)) return uvVenv
   // Nous installer ships its own uv-managed python alongside the binary
-  const nousPython = resolve(homedir(), '.claude', 'venv', 'bin', 'python')
+  const nousPython = resolve(homedir(), '.claude', 'venv', binDir, pyBin)
   if (existsSync(nousPython)) return nousPython
-  return 'python3'
+  return isWin ? 'python' : 'python3'
 }
 
 export async function isClaudeAgentHealthy(
@@ -160,6 +166,7 @@ export async function startClaudeAgent(): Promise<StartClaudeAgentResult> {
         }
       }
 
+      const isWin = process.platform === 'win32'
       const child = spawn(
         command,
         commandArgs,
@@ -173,10 +180,10 @@ export async function startClaudeAgent(): Promise<StartClaudeAgentResult> {
             PATH: [
               resolve(homedir(), '.claude', 'bin'),
               resolve(homedir(), '.local', 'bin'),
-              agentDir ? resolve(agentDir, '.venv', 'bin') : '',
-              agentDir ? resolve(agentDir, 'venv', 'bin') : '',
+              agentDir ? resolve(agentDir, '.venv', isWin ? 'Scripts' : 'bin') : '',
+              agentDir ? resolve(agentDir, 'venv', isWin ? 'Scripts' : 'bin') : '',
               process.env.PATH || '',
-            ].filter(Boolean).join(':'),
+            ].filter(Boolean).join(isWin ? ';' : ':'),
           },
         },
       )

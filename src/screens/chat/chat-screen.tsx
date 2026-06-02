@@ -92,6 +92,7 @@ import { FileExplorerSidebar } from '@/components/file-explorer'
 import { SEARCH_MODAL_EVENTS } from '@/hooks/use-search-modal'
 import { SIDEBAR_TOGGLE_EVENT } from '@/hooks/use-global-shortcuts'
 import { useWorkspaceStore } from '@/stores/workspace-store'
+import { useSessionModelStore } from '@/stores/session-model-store'
 import { TerminalPanel } from '@/components/terminal-panel'
 import { AgentViewPanel } from '@/components/agent-view/agent-view-panel'
 import { useTerminalPanelStore } from '@/stores/terminal-panel-store'
@@ -1023,8 +1024,11 @@ export function ChatScreen({
     return models.map((m: any) => m.id).filter((id: string) => id)
   }, [modelsQuery.data])
 
+  const persistedSessionModel = useSessionModelStore((s) =>
+    s.getModel(resolvedSessionKey || activeFriendlyId || 'new'),
+  )
   const gatewayModel = currentModelQuery.data || ''
-  const currentModel = _localModelOverride || gatewayModel
+  const currentModel = _localModelOverride || persistedSessionModel || gatewayModel
 
   // Ref so sendMessage can always read latest thinkingLevel without being in deps
   const thinkingLevelRef = useRef<ThinkingLevel>(thinkingLevel)
@@ -1659,8 +1663,11 @@ export function ChatScreen({
     }
   }, [isMobile, terminalPanelInset])
 
+  const isUuidSession = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(activeFriendlyId)
+
   const shouldRedirectToNew =
     !isNewChat &&
+    !isUuidSession && // Uuid sessions represent valid created resources (background tasks or exports) - do not redirect!
     !forcedSessionKey &&
     !isRecentSession(activeFriendlyId) &&
     sessionsQuery.isSuccess &&

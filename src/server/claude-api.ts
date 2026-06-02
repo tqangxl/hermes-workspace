@@ -131,12 +131,15 @@ export async function listSessions(
 ): Promise<Array<ClaudeSession>> {
   if (getCapabilities().dashboard.available) {
     const resp = await listDashboardSessions(limit, offset)
-    return resp.sessions as Array<ClaudeSession>
+    return (resp.sessions ?? []) as Array<ClaudeSession>
   }
-  const resp = await claudeGet<{ items: Array<ClaudeSession>; total: number }>(
+
+  // Ensure the gateway has been probed before calling the gateway API directly
+  await ensureGatewayProbed()
+  const resp = await claudeGet<{ items?: Array<ClaudeSession>; total?: number }>(
     `/api/sessions?limit=${limit}&offset=${offset}`,
   )
-  return resp.items
+  return resp.items ?? []
 }
 
 export async function getSession(sessionId: string): Promise<ClaudeSession> {

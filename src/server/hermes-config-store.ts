@@ -55,11 +55,17 @@ export type HermesConfigFiles = {
   authProfiles: Record<string, unknown>
 }
 
+import { getActiveProfileName } from './profiles-browser'
+
 export function resolveHermesConfigPaths(): HermesConfigPaths {
-  const hermesHome =
+  const baseHome =
     process.env.HERMES_HOME ??
     process.env.CLAUDE_HOME ??
     path.join(os.homedir(), '.hermes')
+  const active = getActiveProfileName()
+  const hermesHome = active === 'default'
+    ? baseHome
+    : path.join(baseHome, 'profiles', active)
   return {
     hermesHome,
     configPath: path.join(hermesHome, 'config.yaml'),

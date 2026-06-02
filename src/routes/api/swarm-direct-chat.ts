@@ -85,7 +85,7 @@ function resolveWorkerCwd(workerId: string): string {
 
 function resolveTmuxBin(): string | null {
   for (const candidate of TMUX_BIN_CANDIDATES) {
-    if (candidate.includes('/')) {
+    if (candidate.includes('/') || candidate.includes('\\')) {
       if (existsSync(candidate)) return candidate
     } else {
       return candidate

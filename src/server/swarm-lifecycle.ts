@@ -101,7 +101,7 @@ export function getSwarmLifecycleStatus(workerId: string, policy = DEFAULT_POLIC
   const profilePath = join(getProfilesDir(), workerId)
   let parsed: Record<string, unknown> = {}
   try {
-    const raw = execFileSync('python3', ['-c', PYTHON_STATUS, profilePath], { encoding: 'utf8', timeout: 5_000 })
+    const raw = execFileSync('python', ['-c', PYTHON_STATUS, profilePath], { encoding: 'utf8', timeout: 5_000 })
     parsed = JSON.parse(raw) as Record<string, unknown>
   } catch {
     parsed = { ok: false }

@@ -55,9 +55,5 @@ export function shouldBlockZeroForkModelSwitch(
   mode: string | null | undefined,
   flags: ZeroForkModelInfoFlags,
 ): boolean {
-  return (
-    mode === 'zero-fork' &&
-    flags.vanillaAgent &&
-    !flags.supportsRuntimeSwitching
-  )
+  return false
 }

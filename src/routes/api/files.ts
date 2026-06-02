@@ -65,7 +65,7 @@ function ensureWorkspacePath(input: string, workspaceRoot: string) {
 
 function toRelative(resolvedPath: string, workspaceRoot: string) {
   const relative = path.relative(workspaceRoot, resolvedPath)
-  return relative || ''
+  return (relative || '').replace(/\\/g, '/')
 }
 
 function sortEntries(entries: Array<FileEntry>) {

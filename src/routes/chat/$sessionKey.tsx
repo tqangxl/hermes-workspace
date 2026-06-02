@@ -6,6 +6,7 @@ import {
   reconcileSessionDraft,
 } from '../../screens/chat/chat-queries'
 import { ErrorBoundary } from '@/components/error-boundary'
+import { useSessionModelStore } from '../../stores/session-model-store'
 
 const ChatScreen = lazy(async () => {
   const module = await import('../../screens/chat/chat-screen')
@@ -88,6 +89,19 @@ function ChatRoute() {
     }) {
       const sourceFriendlyId = activeFriendlyId
       const sourceSessionKey = forcedSessionKey ?? activeFriendlyId
+
+      // Migrate selected model from 'new' or old session to the resolved session
+      try {
+        const store = useSessionModelStore.getState()
+        const currentSelectedModel = store.getModel(sourceSessionKey) || store.getModel('new')
+        if (currentSelectedModel) {
+          store.setModel(payload.friendlyId, currentSelectedModel)
+          store.setModel(payload.sessionKey, currentSelectedModel)
+        }
+      } catch (err) {
+        console.warn('[chat] failed to migrate selected model:', err)
+      }
+
       moveHistoryMessages(
         queryClient,
         sourceFriendlyId,

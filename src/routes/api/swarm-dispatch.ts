@@ -15,14 +15,18 @@ import { ensureSwarmProfileConfig } from '../../server/swarm-profile-config'
 
 const HERMES_BIN_CANDIDATES = [
   process.env.HERMES_CLI_BIN,
-  join(homedir(), '.hermes', 'hermes-agent', 'venv', 'bin', 'hermes'),
-  join(homedir(), '.local', 'bin', 'hermes'),
+  process.platform === 'win32'
+    ? join(homedir(), '.hermes', 'hermes-agent', 'venv', 'Scripts', 'hermes.exe')
+    : join(homedir(), '.hermes', 'hermes-agent', 'venv', 'bin', 'hermes'),
+  process.platform === 'win32'
+    ? join(homedir(), '.local', 'bin', 'hermes.exe')
+    : join(homedir(), '.local', 'bin', 'hermes'),
   'hermes',
 ].filter((value): value is string => Boolean(value))
 
 function resolveHermesBin(): string {
   for (const candidate of HERMES_BIN_CANDIDATES) {
-    if (candidate.includes('/')) {
+    if (candidate.includes('/') || candidate.includes('\\')) {
       if (existsSync(candidate)) return candidate
       continue
     }
@@ -87,9 +91,10 @@ const MAX_TIMEOUT_S = 600
 function getProfilesDir(): string {
   const base = process.env.HERMES_HOME ?? process.env.CLAUDE_HOME
   if (base) {
-    const parts = base.split('/').filter(Boolean)
+    const parts = base.split(/[/\\]/).filter(Boolean)
     if (parts.length >= 2 && parts.at(-2) === 'profiles') {
-      return base.split('/').slice(0, -1).join('/')
+      const sep = base.includes('\\') ? '\\' : '/'
+      return base.split(/[/\\]/).slice(0, -1).join(sep)
     }
     return join(base, 'profiles')
   }
@@ -131,7 +136,7 @@ function resolveTmuxBin(): string | null {
     if (!override.includes('/')) return override
   }
   for (const candidate of TMUX_BIN_CANDIDATES) {
-    if (candidate.includes('/')) {
+    if (candidate.includes('/') || candidate.includes('\\')) {
       if (
         candidate === process.env.TMUX_BIN ||
         candidate === '/opt/homebrew/bin/tmux' ||
@@ -887,9 +892,7 @@ function runWorker(assignment: AssignmentRequest, timeoutMs: number, roster: Swa
 
     const useWrapper = existsSync(wrapperPath)
     const cmd = useWrapper ? wrapperPath : resolveHermesBin()
-    const args = useWrapper
-      ? ['chat', '-q', '-Q', '--yolo', '--ignore-rules', '--source', 'swarm-dispatch', prompt]
-      : ['chat', '-q', '-Q', '--yolo', '--ignore-rules', '--source', 'swarm-dispatch']
+    const args = ['chat', '-q', prompt, '-Q', '--yolo', '--ignore-rules', '--source', 'swarm-dispatch']
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       HERMES_HOME: profilePath,

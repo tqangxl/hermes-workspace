@@ -50,11 +50,15 @@ function resolveClaudeAgentDir(env: Record<string, string>): string | null {
 
 /** Find the Hermes CLI binary used to start the local gateway. */
 function resolveClaudeBinary(): string | null {
+  const isWin = process.platform === 'win32'
+  const hermesBin = isWin ? 'hermes.exe' : 'hermes'
+  const claudeBin = isWin ? 'claude.exe' : 'claude'
+  const binDir = isWin ? 'Scripts' : 'bin'
   const candidates = [
     process.env.HERMES_CLI_BIN || '',
-    resolve(os.homedir(), '.hermes', 'hermes-agent', 'venv', 'bin', 'hermes'),
-    resolve(os.homedir(), '.claude', 'bin', 'claude'),
-    resolve(os.homedir(), '.local', 'bin', 'claude'),
+    resolve(os.homedir(), '.hermes', 'hermes-agent', 'venv', binDir, hermesBin),
+    resolve(os.homedir(), '.claude', 'bin', claudeBin),
+    resolve(os.homedir(), '.local', 'bin', claudeBin),
   ]
   for (const c of candidates) {
     if (existsSync(c)) return c
@@ -66,12 +70,15 @@ function resolveClaudeBinary(): string | null {
  *  Prefers .venv/bin/python inside agentDir, falls back to system python3.
  */
 function resolveClaudePython(agentDir: string): string {
-  const venvPython = resolve(agentDir, '.venv', 'bin', 'python')
+  const isWin = process.platform === 'win32'
+  const pyBin = isWin ? 'python.exe' : 'python'
+  const binDir = isWin ? 'Scripts' : 'bin'
+  const venvPython = resolve(agentDir, '.venv', binDir, pyBin)
   if (existsSync(venvPython)) return venvPython
   // uv creates 'venv' not '.venv' sometimes
-  const uvVenv = resolve(agentDir, 'venv', 'bin', 'python')
+  const uvVenv = resolve(agentDir, 'venv', binDir, pyBin)
   if (existsSync(uvVenv)) return uvVenv
-  return 'python3'
+  return isWin ? 'python' : 'python3'
 }
 
 /** Check if hermes-agent health endpoint is responding */
@@ -162,6 +169,7 @@ const config = defineConfig(({ mode, command }) => {
       return
     }
 
+    const isWin = process.platform === 'win32'
     const child = spawn(launchCmd, commandArgs, {
       cwd: launchCwd,
       detached: false, // keep tied to vite process — stops when dev server stops
@@ -171,12 +179,12 @@ const config = defineConfig(({ mode, command }) => {
         PATH: [
           resolve(os.homedir(), '.claude', 'bin'),
           resolve(os.homedir(), '.local', 'bin'),
-          agentDir ? resolve(agentDir, '.venv', 'bin') : '',
-          agentDir ? resolve(agentDir, 'venv', 'bin') : '',
+          agentDir ? resolve(agentDir, '.venv', isWin ? 'Scripts' : 'bin') : '',
+          agentDir ? resolve(agentDir, 'venv', isWin ? 'Scripts' : 'bin') : '',
           process.env.PATH || '',
         ]
           .filter(Boolean)
-          .join(':'),
+          .join(isWin ? ';' : ':'),
       },
     })
 

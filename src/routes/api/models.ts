@@ -15,10 +15,111 @@ import {
   getDiscoveredModels,
   ensureProviderInConfig,
 } from '../../server/local-provider-discovery'
+import { getActiveProfileName } from '../../server/profiles-browser'
 
-const CLAUDE_HOME = process.env.HERMES_HOME ?? process.env.CLAUDE_HOME ?? path.join(os.homedir(), '.hermes')
-const MODELS_PATH = path.join(CLAUDE_HOME, 'models.json')
-const CONFIG_PATH = path.join(CLAUDE_HOME, 'config.yaml')
+export function getClaudeHome(): string {
+  const baseHome = process.env.HERMES_HOME ?? process.env.CLAUDE_HOME ?? path.join(os.homedir(), '.hermes')
+  const active = getActiveProfileName()
+  return active === 'default'
+    ? baseHome
+    : path.join(baseHome, 'profiles', active)
+}
+
+function getModelsPath(): string {
+  return path.join(getClaudeHome(), 'models.json')
+}
+
+function getConfigPath(): string {
+  return path.join(getClaudeHome(), 'config.yaml')
+}
+
+export function getActiveGatewayApi(): string {
+  if (process.env.HERMES_API_URL || process.env.CLAUDE_API_URL) {
+    return (process.env.HERMES_API_URL || process.env.CLAUDE_API_URL)!.trim().replace(/\/+$/, '')
+  }
+  try {
+    const configPath = getConfigPath()
+    if (fs.existsSync(configPath)) {
+      const raw = fs.readFileSync(configPath, 'utf-8')
+      const parsed = YAML.parse(raw)
+      if (parsed && typeof parsed === 'object') {
+        const config = parsed as Record<string, unknown>
+        const platforms = config.platforms as Record<string, unknown>
+        const apiServer = platforms?.api_server as Record<string, unknown>
+        const extra = apiServer?.extra as Record<string, unknown>
+        const port = extra?.port
+        if (typeof port === 'number' || (typeof port === 'string' && !isNaN(parseInt(port, 10)))) {
+          return `http://127.0.0.1:${port}`
+        }
+      }
+    }
+  } catch {
+    // fall through
+  }
+  return 'http://127.0.0.1:8642'
+}
+
+function readStaticProfileModels(): Array<ModelEntry> {
+  const staticModels: Array<ModelEntry> = []
+  try {
+    const configPath = getConfigPath()
+    if (fs.existsSync(configPath)) {
+      const raw = fs.readFileSync(configPath, 'utf-8')
+      const parsed = YAML.parse(raw)
+      if (parsed && typeof parsed === 'object') {
+        const config = parsed as Record<string, unknown>
+        if (config.providers && typeof config.providers === 'object') {
+          const providers = config.providers as Record<string, unknown>
+          for (const [providerId, providerVal] of Object.entries(providers)) {
+            if (providerVal && typeof providerVal === 'object') {
+              const p = providerVal as Record<string, unknown>
+              if (p.models && typeof p.models === 'object') {
+                const modelsMap = p.models as Record<string, unknown>
+                for (const modelId of Object.keys(modelsMap)) {
+                  staticModels.push({
+                    id: modelId,
+                    name: modelId,
+                    provider: providerId,
+                    source: 'static-config'
+                  })
+                }
+              }
+              if (typeof p.model === 'string' && p.model.trim()) {
+                staticModels.push({
+                  id: p.model.trim(),
+                  name: p.model.trim(),
+                  provider: providerId,
+                  source: 'static-config'
+                })
+              }
+            }
+          }
+        }
+        if (config.model_aliases && typeof config.model_aliases === 'object') {
+          const aliases = config.model_aliases as Record<string, unknown>
+          for (const [aliasName, aliasVal] of Object.entries(aliases)) {
+            if (aliasVal && typeof aliasVal === 'object') {
+              const a = aliasVal as Record<string, unknown>
+              const modelId = typeof a.model === 'string' ? a.model.trim() : ''
+              const provider = typeof a.provider === 'string' ? a.provider.trim() : 'unknown'
+              if (modelId) {
+                staticModels.push({
+                  id: modelId,
+                  name: `${aliasName} (${modelId})`,
+                  provider: provider,
+                  source: 'model-aliases'
+                })
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return staticModels
+}
 
 type ModelEntry = {
   provider?: string
@@ -87,8 +188,9 @@ export function mergeModelEntries(...sources: Array<Array<ModelEntry>>): Array<M
  */
 function readClaudeModelsJson(): Array<ModelEntry> {
   try {
-    if (!fs.existsSync(MODELS_PATH)) return []
-    const raw = fs.readFileSync(MODELS_PATH, 'utf-8')
+    const modelsPath = getModelsPath()
+    if (!fs.existsSync(modelsPath)) return []
+    const raw = fs.readFileSync(modelsPath, 'utf-8')
     const entries = JSON.parse(raw)
     if (!Array.isArray(entries)) return []
     return entries
@@ -116,8 +218,9 @@ function readStreamTimeouts(): { streamAcceptedTimeoutMs: number; streamHandoffT
   let acceptedS = DEFAULT_ACCEPTED_TIMEOUT_S
   let handoffS = DEFAULT_HANDOFF_TIMEOUT_S
   try {
-    if (fs.existsSync(CONFIG_PATH)) {
-      const parsed = YAML.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'))
+    const configPath = getConfigPath()
+    if (fs.existsSync(configPath)) {
+      const parsed = YAML.parse(fs.readFileSync(configPath, 'utf-8'))
       const ws =
         parsed && typeof parsed === 'object' && typeof (parsed as Record<string, unknown>).workspace === 'object'
           ? ((parsed as Record<string, unknown>).workspace as Record<string, unknown>)
@@ -143,8 +246,9 @@ function readStreamTimeouts(): { streamAcceptedTimeoutMs: number; streamHandoffT
  */
 function readClaudeDefaultModel(): ModelEntry | null {
   try {
-    if (!fs.existsSync(CONFIG_PATH)) return null
-    const raw = fs.readFileSync(CONFIG_PATH, 'utf-8')
+    const configPath = getConfigPath()
+    if (!fs.existsSync(configPath)) return null
+    const raw = fs.readFileSync(configPath, 'utf-8')
     const parsed = YAML.parse(raw)
     if (!parsed || typeof parsed !== 'object') return null
     const config = parsed as Record<string, unknown>
@@ -172,10 +276,10 @@ function readClaudeDefaultModel(): ModelEntry | null {
 /**
  * Fallback: fetch models from the hermes-agent /v1/models endpoint.
  */
-async function fetchClaudeModels(): Promise<Array<ModelEntry>> {
+async function fetchClaudeModels(gatewayApi = getActiveGatewayApi()): Promise<Array<ModelEntry>> {
   const headers: Record<string, string> = {}
   if (BEARER_TOKEN) headers['Authorization'] = `Bearer ${BEARER_TOKEN}`
-  const response = await fetch(`${CLAUDE_API}/v1/models`, { headers })
+  const response = await fetch(`${gatewayApi}/v1/models`, { headers })
   if (!response.ok)
     throw new Error(`Hermes models request failed (${response.status})`)
   const payload = asRecord(await response.json())
@@ -203,6 +307,10 @@ export const Route = createFileRoute('/api/models')({
           let models = readClaudeModelsJson()
           let source = 'models.json'
 
+          // Merge static main models and model aliases from the active profile config
+          const staticModels = readStaticProfileModels()
+          models = mergeModelEntries(models, staticModels)
+
           // Ensure the default model from config.yaml is always first
           const defaultModel = readClaudeDefaultModel()
           if (defaultModel) {
@@ -215,9 +323,14 @@ export const Route = createFileRoute('/api/models')({
           // Operations picker only showed the local Workspace subset and drifted
           // from the CLI/backend model universe.
           if (getGatewayCapabilities().models) {
-            const hermesModels = await fetchClaudeModels()
-            models = mergeModelEntries(models, hermesModels)
-            source = source === 'models.json' ? 'models.json+hermes-agent' : 'hermes-agent'
+            try {
+              const activeGateway = getActiveGatewayApi()
+              const hermesModels = await fetchClaudeModels(activeGateway)
+              models = mergeModelEntries(models, hermesModels)
+              source = source === 'models.json' ? 'models.json+hermes-agent' : 'hermes-agent'
+            } catch (err) {
+              console.warn('[models-api] Failed to fetch dynamic models from active gateway:', err instanceof Error ? err.message : err)
+            }
           }
 
           // Merge auto-discovered local models (Ollama, Atomic Chat, etc.)

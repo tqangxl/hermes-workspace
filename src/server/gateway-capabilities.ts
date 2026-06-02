@@ -19,6 +19,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import YAML from 'yaml'
+import { getActiveProfileName } from './profiles-browser'
 import { getStateDir } from './workspace-state-dir'
 
 type WorkspaceOverrides = {
@@ -31,6 +33,9 @@ function overridesPath(): string {
 }
 
 function readOverrides(): WorkspaceOverrides {
+  if (typeof window !== 'undefined') {
+    return {}
+  }
   try {
     const raw = fs.readFileSync(overridesPath(), 'utf-8')
     const parsed = JSON.parse(raw) as unknown
@@ -41,6 +46,9 @@ function readOverrides(): WorkspaceOverrides {
 }
 
 function writeOverrides(next: WorkspaceOverrides): void {
+  if (typeof window !== 'undefined') {
+    return
+  }
   const file = overridesPath()
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
@@ -57,13 +65,51 @@ function normalizeUrl(u: string): string {
   return u.trim().replace(/\/+$/, '')
 }
 
+function getClaudeHome(): string {
+  if (typeof window !== 'undefined') {
+    return ''
+  }
+  const baseHome = process.env.HERMES_HOME ?? process.env.CLAUDE_HOME ?? path.join(os.homedir(), '.hermes')
+  const active = getActiveProfileName()
+  return active === 'default'
+    ? baseHome
+    : path.join(baseHome, 'profiles', active)
+}
+
+export function getActiveGatewayApi(): string {
+  if (typeof window !== 'undefined') {
+    return 'http://127.0.0.1:8642'
+  }
+  if (process.env.HERMES_API_URL || process.env.CLAUDE_API_URL) {
+    return (process.env.HERMES_API_URL || process.env.CLAUDE_API_URL)!.trim().replace(/\/+$/, '')
+  }
+  try {
+    const configPath = path.join(getClaudeHome(), 'config.yaml')
+    if (fs.existsSync(configPath)) {
+      const raw = fs.readFileSync(configPath, 'utf-8')
+      const parsed = YAML.parse(raw)
+      if (parsed && typeof parsed === 'object') {
+        const config = parsed as Record<string, unknown>
+        const platforms = config.platforms as Record<string, unknown>
+        const apiServer = platforms?.api_server as Record<string, unknown>
+        const extra = apiServer?.extra as Record<string, unknown>
+        const port = extra?.port
+        if (typeof port === 'number' || (typeof port === 'string' && !isNaN(parseInt(port, 10)))) {
+          return `http://127.0.0.1:${port}`
+        }
+      }
+    }
+  } catch {}
+  return 'http://127.0.0.1:8642'
+}
+
 const _initialOverrides = readOverrides()
 
 export let CLAUDE_API = normalizeUrl(
   _initialOverrides.claudeApiUrl ||
     process.env.HERMES_API_URL ||
     process.env.CLAUDE_API_URL ||
-    'http://127.0.0.1:8642',
+    getActiveGatewayApi(),
 )
 export let CLAUDE_DASHBOARD_URL = normalizeUrl(
   _initialOverrides.claudeDashboardUrl ||
@@ -258,8 +304,47 @@ let lastLoggedSummary = ''
 let dashboardTokenPromise: Promise<string> | null = null
 let dashboardTokenCache = ''
 
+function loadEnvToken(): string {
+  if (process.env.HERMES_API_TOKEN || process.env.CLAUDE_API_TOKEN) {
+    return process.env.HERMES_API_TOKEN || process.env.CLAUDE_API_TOKEN || ''
+  }
+  if (typeof window !== 'undefined') {
+    return ''
+  }
+  try {
+    const baseHome = process.env.HERMES_HOME ?? process.env.CLAUDE_HOME ?? path.join(os.homedir(), '.hermes')
+    const envPaths = [
+      path.join(baseHome, '.env'),
+      path.join(process.cwd(), '.env'),
+    ]
+    for (const envPath of envPaths) {
+      if (fs && typeof fs.existsSync === 'function' && fs.existsSync(envPath)) {
+        const raw = fs.readFileSync(envPath, 'utf-8')
+        for (const line of raw.split('\n')) {
+          const trimmed = line.trim()
+          if (!trimmed || trimmed.startsWith('#')) continue
+          const eqIdx = trimmed.indexOf('=')
+          if (eqIdx <= 0) continue
+          const key = trimmed.slice(0, eqIdx).trim()
+          let value = trimmed.slice(eqIdx + 1).trim()
+          if (
+            (value.startsWith('"') && value.endsWith('"')) ||
+            (value.startsWith("'") && value.endsWith("'"))
+          ) {
+            value = value.slice(1, -1)
+          }
+          if (key === 'HERMES_API_TOKEN' || key === 'CLAUDE_API_TOKEN' || key === 'API_SERVER_KEY') {
+            return value
+          }
+        }
+      }
+    }
+  } catch {}
+  return ''
+}
+
 /** Optional bearer token for authenticated gateway endpoints. */
-export const BEARER_TOKEN = process.env.HERMES_API_TOKEN || process.env.CLAUDE_API_TOKEN || ''
+export const BEARER_TOKEN = loadEnvToken()
 
 /**
  * Dashboard API auth uses the ephemeral session token injected into the
@@ -720,13 +805,28 @@ function logCapabilities(next: GatewayCapabilities): void {
 }
 
 async function autoDetectGatewayUrl(): Promise<void> {
+  if (typeof window !== 'undefined') return
   if (process.env.HERMES_API_URL || process.env.CLAUDE_API_URL) return
+
+  const profileApi = getActiveGatewayApi()
+  try {
+    const res = await fetch(`${profileApi}/health`, {
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    })
+    if (res.ok) {
+      CLAUDE_API = profileApi
+      console.log(`[gateway] Connected to Hermes gateway at ${CLAUDE_API}`)
+      return
+    }
+  } catch {
+    // continue
+  }
 
   const candidates = [
     'http://127.0.0.1:8642',
     'http://127.0.0.1:8643',
     'http://127.0.0.1:8645',
-  ]
+  ].filter(c => c !== profileApi)
 
   for (const candidate of candidates) {
     try {
@@ -744,7 +844,7 @@ async function autoDetectGatewayUrl(): Promise<void> {
   }
 
   console.warn(
-    '[gateway] Could not reach Hermes gateway on 8645, 8642, or 8643. ' +
+    `[gateway] Could not reach Hermes gateway on ${profileApi} or candidates. ` +
       'If you run the workspace on a different machine (Tailscale / VPN / LAN), ' +
       'set HERMES_API_URL=http://<reachable-host>:8642 in .env and restart. ' +
       'Also set API_SERVER_HOST=0.0.0.0 on the gateway so remote peers can connect.',
@@ -752,6 +852,7 @@ async function autoDetectGatewayUrl(): Promise<void> {
 }
 
 async function autoDetectDashboardUrl(): Promise<void> {
+  if (typeof window !== 'undefined') return
   if (process.env.CLAUDE_DASHBOARD_URL) return
 
   const candidates = ['http://127.0.0.1:9119']
