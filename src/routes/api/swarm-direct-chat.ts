@@ -62,15 +62,25 @@ function getProfilePath(workerId: string): string {
 
 function getWrapperPath(workerId: string): string {
   const worker = rosterByWorkerId([workerId]).get(workerId)
-  const wrapperName = worker?.wrapper?.trim() || workerId
-  return join(homedir(), '.local', 'bin', wrapperName)
+  const wrapperName = (worker?.wrapper?.trim() || workerId)
+  return join(getProfilePath(workerId), wrapperName)
+}
+
+function resolveWrapperForExec(wrapperPath: string): string {
+  if (existsSync(wrapperPath)) return wrapperPath
+  if (process.platform === 'win32') {
+    const withBat = `${wrapperPath}.bat`
+    if (existsSync(withBat)) return withBat
+  }
+  return wrapperPath
 }
 
 function resolveWorkerCwd(workerId: string): string {
   const wrapperPath = getWrapperPath(workerId)
-  if (existsSync(wrapperPath)) {
+  const resolved = resolveWrapperForExec(wrapperPath)
+  if (existsSync(resolved)) {
     try {
-      const text = readFileSync(wrapperPath, 'utf8')
+      const text = readFileSync(resolved, 'utf8')
       const m = text.match(/cd\s+([^\n]+?)\s+\|\|\s+exit\s+1/)
       if (m?.[1]) {
         const raw = m[1].trim().replace(/^['"]|['"]$/g, '')

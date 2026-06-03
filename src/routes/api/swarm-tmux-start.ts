@@ -24,6 +24,10 @@ function getProfilesDir(): string {
   return join(homedir(), '.hermes', 'profiles')
 }
 
+function getProfilePath(workerId: string): string {
+  return join(getProfilesDir(), workerId)
+}
+
 /**
  * POST /api/swarm-tmux-start
  * Body: { workerId: "swarm1" }
@@ -195,13 +199,27 @@ function startSession(
   })
 }
 
-function resolveWorkerCwd(workerId: string): string {
+function getWrapperPath(workerId: string): string {
   const worker = rosterByWorkerId([workerId]).get(workerId)
-  const wrapperName = worker?.wrapper?.trim() || workerId
-  const wrapperPath = join(homedir(), '.local', 'bin', wrapperName)
-  if (existsSync(wrapperPath)) {
+  const wrapperName = (worker?.wrapper?.trim() || workerId)
+  return join(getProfilePath(workerId), wrapperName)
+}
+
+function resolveWrapperForExec(wrapperPath: string): string {
+  if (existsSync(wrapperPath)) return wrapperPath
+  if (process.platform === 'win32') {
+    const withBat = `${wrapperPath}.bat`
+    if (existsSync(withBat)) return withBat
+  }
+  return wrapperPath
+}
+
+function resolveWorkerCwd(workerId: string): string {
+  const wrapperPath = getWrapperPath(workerId)
+  const resolved = resolveWrapperForExec(wrapperPath)
+  if (existsSync(resolved)) {
     try {
-      const text = readFileSync(wrapperPath, 'utf8')
+      const text = readFileSync(resolved, 'utf8')
       const m = text.match(/cd\s+'([^']+)'/)
       if (m && m[1] && existsSync(m[1])) return m[1]
     } catch {

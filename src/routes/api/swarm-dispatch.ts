@@ -159,8 +159,22 @@ function getProfilesDir(): string {
 
 function getWrapperPath(workerId: string): string {
   const worker = rosterByWorkerId([workerId]).get(workerId)
-  const wrapperName = worker?.wrapper?.trim() || workerId
-  return join(homedir(), '.local', 'bin', wrapperName)
+  const wrapperName = (worker?.wrapper?.trim() || workerId)
+  return join(getProfilePath(workerId), wrapperName)
+}
+
+/** Resolve a wrapper path for Node's execFile on Windows: append .bat if the
+ *  bare path doesn't exist but a .bat variant does. This lets hermes profile
+ *  alias --name <path> place wrappers anywhere (e.g. inside the profile dir)
+ *  without requiring the caller to know the .bat suffix. */
+function resolveWrapperForExec(wrapperPath: string): string {
+  if (existsSync(wrapperPath)) return wrapperPath
+  // Windows: hermes profile alias appends .bat; Node execFile does NOT auto-resolve
+  if (process.platform === 'win32') {
+    const withBat = `${wrapperPath}.bat`
+    if (existsSync(withBat)) return withBat
+  }
+  return wrapperPath
 }
 
 function getProfilePath(workerId: string): string {
@@ -620,9 +634,10 @@ async function waitForFreshCheckpoint(
 
 function resolveWorkerCwd(workerId: string): string {
   const wrapperPath = getWrapperPath(workerId)
-  if (existsSync(wrapperPath)) {
+  const resolved = resolveWrapperForExec(wrapperPath)
+  if (existsSync(resolved)) {
     try {
-      const text = readFileSync(wrapperPath, 'utf8')
+      const text = readFileSync(resolved, 'utf8')
       const m = text.match(/cd\s+([^\n]+?)\s+\|\|\s+exit\s+1/)
       if (m?.[1]) {
         const raw = m[1].trim().replace(/^['"]|['"]$/g, '')
@@ -947,7 +962,7 @@ function runWorker(assignment: AssignmentRequest, timeoutMs: number, roster: Swa
     }
 
     const useWrapper = existsSync(wrapperPath)
-    const cmd = useWrapper ? wrapperPath : resolveHermesBin()
+    const cmd = useWrapper ? resolveWrapperForExec(wrapperPath) : resolveHermesBin()
     const args = ['chat', '-q', prompt, '-Q', '--yolo', '--ignore-rules', '--source', 'swarm-dispatch']
     const env: NodeJS.ProcessEnv = {
       ...process.env,

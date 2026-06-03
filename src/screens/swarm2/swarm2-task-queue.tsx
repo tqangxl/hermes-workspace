@@ -131,13 +131,21 @@ export function Swarm2TaskQueue({
   })
 
   const createMutation = useMutation({
-    mutationFn: async () => createWorkerTask(workerId, draftTitle.trim(), draftDescription.trim()),
+    mutationKey: ['swarm2', 'task-create', workerId],
+    mutationFn: async () => {
+      console.log('[swarm2-task-queue] Creating task:', { workerId, title: draftTitle.trim(), description: draftDescription.trim() })
+      return createWorkerTask(workerId, draftTitle.trim(), draftDescription.trim())
+    },
     onSuccess: async () => {
       setDraftTitle('')
       setDraftDescription('')
       setComposerOpen(false)
       setDetailsOpen(true)
       await queryClient.invalidateQueries({ queryKey: ['swarm2', 'tasks', workerId] })
+    },
+    onError: (error) => {
+      console.error('[swarm2-task-queue] Failed to create task:', error)
+      window.alert(`添加任务失败：${error instanceof Error ? error.message : String(error)}`)
     },
   })
 
