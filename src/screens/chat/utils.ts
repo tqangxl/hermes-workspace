@@ -103,12 +103,31 @@ function cleanUserText(raw: string): string {
 export function textFromMessage(msg: ChatMessage): string {
   const parts = Array.isArray(msg.content) ? msg.content : []
   let raw = parts
-    .map((part) => (part.type === 'text' ? String(part.text ?? '') : ''))
+    .map((part) => {
+      if (part.type !== 'text') return ''
+      // The text field on a content part is expected to be a string,
+      // but some server / channel adapters put an object there (e.g.
+      // {text: "hi", ts: 123} or a tool-call stub). Naively coercing
+      // via String() produces "[object Object]" which then renders as
+      // the message body. Accept strings only, and stringify any other
+      // shape as JSON so the user at least sees something meaningful.
+      const text = part.text
+      if (typeof text === 'string') return text
+      if (text == null) return ''
+      if (typeof text === 'object') {
+        try {
+          return JSON.stringify(text)
+        } catch {
+          return ''
+        }
+      }
+      return String(text)
+    })
     .join('')
     .trim()
 
   // Fallback: some server / channel adapters echo messages with a top-level
-  // text/body/message field instead of the content array.  Without this
+  // text/body/message field instead of the content array. Without this
   // fallback, textFromMessage returns '' for those echoes which breaks dedup.
   if (raw.length === 0) {
     const rawMsg = msg as Record<string, unknown>

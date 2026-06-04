@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { cn } from '@/lib/utils'
 
 /**
@@ -41,6 +41,71 @@ type TuiActivityCardProps = {
   formatLabel: (name: string, args?: Record<string, unknown>) => string
   /** Get the most useful single arg to show next to the label */
   formatArg: (name: string, args?: Record<string, unknown>) => string | null
+}
+
+/**
+ * Tiny inline copy-to-clipboard button. Shows a "Copied" checkmark for
+ * ~1.5s after a successful copy, then resets. Failures (e.g. insecure
+ * context) silently no-op rather than throwing.
+ */
+function CopyButton({
+  text,
+  label = 'Copy',
+  className,
+}: {
+  text: string
+  label?: string
+  className?: string
+}) {
+  const [copied, setCopied] = useState(false)
+  const handleClick = useCallback(async () => {
+    try {
+      if (
+        typeof navigator !== 'undefined' &&
+        navigator.clipboard &&
+        typeof navigator.clipboard.writeText === 'function'
+      ) {
+        await navigator.clipboard.writeText(text)
+      } else if (typeof document !== 'undefined') {
+        // Fallback for non-secure contexts
+        const textarea = document.createElement('textarea')
+        textarea.value = text
+        textarea.setAttribute('readonly', '')
+        textarea.style.position = 'absolute'
+        textarea.style.left = '-9999px'
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
+      }
+      setCopied(true)
+      const id = window.setTimeout(() => setCopied(false), 1500)
+      return () => window.clearTimeout(id)
+    } catch {
+      // Ignore copy failures (insecure context, permissions, etc.)
+      setCopied(false)
+      return undefined
+    }
+  }, [text])
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      className={
+        className ??
+        'shrink-0 rounded px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider opacity-50 hover:opacity-100 transition-opacity'
+      }
+      style={{
+        color: copied
+          ? 'var(--theme-success, #22c55e)'
+          : 'var(--theme-muted)',
+        border: '1px solid var(--theme-border)',
+      }}
+      title={copied ? 'Copied!' : label}
+    >
+      {copied ? '✓ copied' : label}
+    </button>
+  )
 }
 
 function statusDot(
@@ -292,11 +357,15 @@ function ToolRow({
         >
           {hasInputData ? (
             <div>
-              <div
-                className="mb-0.5 font-sans text-[9px] uppercase tracking-widest opacity-50"
-                style={{ color: 'var(--theme-muted)' }}
-              >
-                Input
+              <div className="mb-0.5 flex items-center gap-2">
+                <div
+                  className="font-sans text-[9px] uppercase tracking-widest opacity-50"
+                  style={{ color: 'var(--theme-muted)' }}
+                >
+                  Input
+                </div>
+                <span className="flex-1" />
+                <CopyButton text={formatToolInput(section)} label="Copy" />
               </div>
               <pre
                 className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded font-mono text-[10px]"
@@ -308,15 +377,22 @@ function ToolRow({
           ) : null}
           {hasOutputData ? (
             <div className={cn(hasInputData && 'mt-1.5')}>
-              <div
-                className="mb-0.5 font-sans text-[9px] uppercase tracking-widest opacity-50"
-                style={{
-                  color: isError
-                    ? 'var(--theme-danger, #ef4444)'
-                    : 'var(--theme-muted)',
-                }}
-              >
-                {isError ? 'Error' : 'Output'}
+              <div className="mb-0.5 flex items-center gap-2">
+                <div
+                  className="font-sans text-[9px] uppercase tracking-widest opacity-50"
+                  style={{
+                    color: isError
+                      ? 'var(--theme-danger, #ef4444)'
+                      : 'var(--theme-muted)',
+                  }}
+                >
+                  {isError ? 'Error' : 'Output'}
+                </div>
+                <span className="flex-1" />
+                <CopyButton
+                  text={section.outputText || section.errorText || ''}
+                  label="Copy"
+                />
               </div>
               <pre
                 className="max-h-[28rem] overflow-auto whitespace-pre-wrap break-words rounded font-mono text-[10px]"
@@ -423,6 +499,13 @@ function TuiActivityCardComponent({
   const hasThinking = !!(thinking && thinking.trim().length > 0)
   const hasTools = toolSections.length > 0
 
+  // Local "expand all" toggle so the user can flip the whole card open /
+  // shut on demand. If the caller passed an explicit expandAll prop, that
+  // wins (parent owns the state in that case).
+  const [localExpandAll, setLocalExpandAll] = useState(false)
+  const effectiveExpandAll = expandAll ?? localExpandAll
+  const showExpandToggle = expandAll === undefined && !isStreaming
+
   const summary = useMemo(() => {
     if (!hasTools) return null
     const total = toolSections.length
@@ -484,6 +567,20 @@ function TuiActivityCardComponent({
             {summary}
           </span>
         ) : null}
+        {showExpandToggle ? (
+          <button
+            type="button"
+            onClick={() => setLocalExpandAll((v) => !v)}
+            className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider opacity-50 hover:opacity-100 transition-opacity"
+            style={{
+              color: 'var(--theme-muted)',
+              border: '1px solid var(--theme-border)',
+            }}
+            title={effectiveExpandAll ? 'Collapse all rows' : 'Expand all rows'}
+          >
+            {effectiveExpandAll ? '▾ Collapse all' : '▸ Expand all'}
+          </button>
+        ) : null}
         {isStreaming ? (
           <span
             className="size-1.5 rounded-full animate-pulse"
@@ -497,7 +594,7 @@ function TuiActivityCardComponent({
             thinking={thinking!}
             elapsedSeconds={thinkingElapsedSeconds}
             isStreaming={isStreaming}
-            expandAll={expandAll}
+            expandAll={effectiveExpandAll}
           />
         ) : null}
         {toolSections.map((section, index) => (
@@ -505,7 +602,7 @@ function TuiActivityCardComponent({
             key={section.key || `${section.type}-${index}`}
             section={section}
             isStreamingActive={isStreaming}
-            expandAll={expandAll}
+            expandAll={effectiveExpandAll}
             formatLabel={formatLabel}
             formatArg={formatArg}
           />

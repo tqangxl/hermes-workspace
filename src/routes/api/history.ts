@@ -16,6 +16,77 @@ import {
 import { isAuthenticated } from '@/server/auth-middleware'
 import { getLocalSession, getLocalMessages } from '../../server/local-session-store'
 
+/**
+ * Normalize a local-cache message's `content` field into a content
+ * part array the client can render.
+ *
+ * The local store historically accepted any content shape — sometimes
+ * a raw string, sometimes a JSON-encoded array of parts. When we hand
+ * it back to the client, we MUST produce a real `[{type, text, ...}]`
+ * array, not a string that itself looks like JSON. Otherwise the
+ * client's textFromMessage would either coerce the string with String()
+ * and produce "[object Object]" (when content is an object) or render
+ * the literal JSON text inside the bubble (when content is a
+ * JSON-encoded string of the array — the double-encoding bug).
+ *
+ * To keep both old and new persisted shapes working, this function
+ * peeks at the input:
+ *   - If it's already an array of parts, return it as-is.
+ *   - If it's a string that parses to an array of parts, return that.
+ *   - Otherwise wrap as a single text part (string-ifying objects).
+ */
+function normalizeLocalContentToParts(content: unknown): Array<{
+  type: 'text'
+  text: string
+}> {
+  if (Array.isArray(content)) {
+    return content
+      .filter((p): p is { type: string; text?: unknown } =>
+        typeof p === 'object' && p !== null,
+      )
+      .map((p) => {
+        if (p.type === 'text' && typeof p.text === 'string') {
+          return { type: 'text' as const, text: p.text }
+        }
+        // Unknown / non-text part — stringify so the client still sees it.
+        return {
+          type: 'text' as const,
+          text: stringifySafe(p),
+        }
+      })
+  }
+  if (typeof content === 'string') {
+    const trimmed = content.trim()
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(trimmed) as unknown
+        if (Array.isArray(parsed)) {
+          // Recurse with the parsed array so we get the same shape.
+          return normalizeLocalContentToParts(parsed)
+        }
+      } catch {
+        // Not valid JSON — fall through and treat the string as text.
+      }
+    }
+    return [{ type: 'text', text: content }]
+  }
+  if (content == null) {
+    return [{ type: 'text', text: '' }]
+  }
+  if (typeof content === 'object') {
+    return [{ type: 'text', text: stringifySafe(content) }]
+  }
+  return [{ type: 'text', text: String(content) }]
+}
+
+function stringifySafe(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return ''
+  }
+}
+
 export const Route = createFileRoute('/api/history')({
   server: {
     handlers: {
@@ -91,7 +162,7 @@ export const Route = createFileRoute('/api/history')({
               messages: localMessages.map((m, index) => ({
                 id: m.id,
                 role: m.role,
-                content: [{ type: 'text', text: m.content }],
+                content: normalizeLocalContentToParts(m.content),
                 timestamp: m.timestamp,
                 historyIndex: index,
               })),
@@ -133,7 +204,7 @@ export const Route = createFileRoute('/api/history')({
                 .map((m) => ({
                   id: m.id,
                   role: m.role,
-                  content: [{ type: 'text', text: m.content }],
+                  content: normalizeLocalContentToParts(m.content),
                   timestamp: m.timestamp,
                   // Tag so the frontend can render a "saved locally" hint
                   __source: 'local-tail' as const,
