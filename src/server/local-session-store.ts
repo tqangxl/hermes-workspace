@@ -129,7 +129,7 @@ export function getLocalMessages(sessionId: string): Array<LocalMessage> {
  */
 export function getLocalMessagesPage(
   sessionId: string,
-  options: { limit?: number; beforeTs?: number } = {},
+  options: { limit?: number; beforeTs?: number; fromTs?: number } = {},
 ): { messages: Array<LocalMessage>; hasMore: boolean; total: number } {
   const all = store.messages[sessionId] ?? []
   const total = all.length
@@ -138,13 +138,30 @@ export function getLocalMessagesPage(
   }
   const limit = options.limit && options.limit > 0 ? options.limit : 50
   const beforeTs = options.beforeTs
+  const fromTs = options.fromTs
 
-  // All entries are kept in insertion order (oldest -> newest).
+  // All entries are kept in insertion order (oldest -> newest). We
+  // apply the lower bound (fromTs) and upper bound (beforeTs) first,
+  // then slice off the last `limit` from the eligible window. This
+  // matches /api/history's behavior on the remote side.
+  let startIndex = 0
   let endIndex = all.length
-  if (typeof beforeTs === 'number') {
-    // Find the first message whose timestamp is >= beforeTs. Everything
-    // before that index has ts < beforeTs (strictly).
+
+  if (typeof fromTs === 'number') {
+    // First index with ts >= fromTs. Everything at or after this
+    // index is in the eligible window.
     let i = 0
+    for (; i < all.length; i += 1) {
+      const ts = all[i].timestamp
+      if (typeof ts === 'number' && ts >= fromTs) break
+    }
+    startIndex = i
+  }
+  if (typeof beforeTs === 'number') {
+    // First index with ts >= beforeTs. Everything before this index
+    // has ts < beforeTs (strictly), so the eligible upper bound is
+    // exclusive of beforeTs.
+    let i = startIndex
     for (; i < all.length; i += 1) {
       if (typeof all[i].timestamp === 'number' && all[i].timestamp >= beforeTs) {
         break
@@ -153,11 +170,12 @@ export function getLocalMessagesPage(
     endIndex = i
   }
 
-  const startIndex = Math.max(0, endIndex - limit)
-  const slice = all.slice(startIndex, endIndex)
+  const eligibleLength = endIndex - startIndex
+  const sliceStart = Math.max(startIndex, endIndex - limit)
+  const slice = all.slice(sliceStart, endIndex)
   return {
     messages: slice,
-    hasMore: startIndex > 0,
+    hasMore: sliceStart > startIndex,
     total,
   }
 }

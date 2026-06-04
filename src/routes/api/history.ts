@@ -121,6 +121,16 @@ export const Route = createFileRoute('/api/history')({
           const beforeTs = beforeParam ? Number(beforeParam) : undefined
           const hasBefore =
             typeof beforeTs === 'number' && Number.isFinite(beforeTs)
+          // `from` is a lower-bound cursor: messages with timestamp >=
+          // from are eligible. Clients that have already loaded older
+          // pages (e.g. olderMessages in the chat UI) pass their oldest
+          // known ts as `from` so refetching after a new user message
+          // doesn't slide the window forward and lose the boundary
+          // messages that were at the front of the previous page.
+          const fromParam = url.searchParams.get('from')?.trim()
+          const fromTs = fromParam ? Number(fromParam) : undefined
+          const hasFrom =
+            typeof fromTs === 'number' && Number.isFinite(fromTs)
           const rawSessionKey = url.searchParams.get('sessionKey')?.trim()
           const friendlyId = url.searchParams.get('friendlyId')?.trim()
           let { sessionKey } = await resolveSessionKey({
@@ -219,7 +229,10 @@ export const Route = createFileRoute('/api/history')({
             messages = messages
               .filter((m) => {
                 const ts = (m as Record<string, unknown>).timestamp
-                return typeof ts === 'number' && ts < (beforeTs as number)
+                if (typeof ts !== 'number') return false
+                if (ts >= (beforeTs as number)) return false
+                if (hasFrom && ts < (fromTs as number)) return false
+                return true
               })
               .sort(
                 (a, b) =>
@@ -228,13 +241,25 @@ export const Route = createFileRoute('/api/history')({
               )
             messages = messages.slice(-limit)
           } else {
+            // No `before` cursor. The client owns the window slicing so
+            // the upper bound doesn't slide when new messages arrive
+            // during a session. Apply the optional `from` lower bound
+            // (so the server doesn't return ancient messages the client
+            // already has loaded as olderMessages) and let the server
+            // return the full eligible range. The client then keeps
+            // the last `limit` of the eligible range as its current
+            // page and treats the rest as part of the older window.
             messages = messages
+              .filter((m) => {
+                if (!hasFrom) return true
+                const ts = (m as Record<string, unknown>).timestamp
+                return typeof ts === 'number' && ts >= (fromTs as number)
+              })
               .sort(
                 (a, b) =>
                   ((a as Record<string, unknown>).timestamp as number) -
                   ((b as Record<string, unknown>).timestamp as number),
               )
-              .slice(-limit)
           }
 
           // MERGE local tail into the response. The local cache is the
@@ -261,9 +286,16 @@ export const Route = createFileRoute('/api/history')({
           const localSession = getLocalSession(sessionKey)
           const alreadyCanonical: Array<Record<string, unknown>> = []
           if (localSession) {
+            // local tail uses the same `from` lower bound so the local
+            // tail in the response stays in the same window as the
+            // remote slice. Without this, a new user message would
+            // arrive via local cache at ts=101, the remote slice would
+            // shift to ts 53-102, and the boundary messages at ts 51-52
+            // would silently disappear from the rendered view.
             const localPage = getLocalMessagesPage(sessionKey, {
               limit: 200,
               beforeTs: hasBefore ? beforeTs : undefined,
+              ...(hasFrom ? { fromTs } : {}),
             })
             const localMessages = localPage.messages
             if (localMessages.length > 0) {
@@ -312,6 +344,15 @@ export const Route = createFileRoute('/api/history')({
           // can drive a uniform reverse-infinite-scroll UI regardless of
           // whether the session is portable or backed by the remote
           // Hermes Agent API.
+          //
+          // Important: the client owns the upper-bound slicing. We
+          // return the entire eligible window (oldest-known -> latest)
+          // and let the client split it into "olderMessages" (the
+          // already-known front portion) + "historyMessages" (the last
+          // limit messages). Returning a pre-sliced last-N from the
+          // server would slide the window forward whenever a new
+          // message arrived, dropping the messages that were at the
+          // front of the previous page.
           const pageSlice = messages
           const oldestInPage =
             pageSlice.length > 0
@@ -320,19 +361,19 @@ export const Route = createFileRoute('/api/history')({
                   | undefined) ?? undefined
               : undefined
           const pageHasMore = (() => {
-            if (!hasBefore) {
-              // First page: there's more if the total count exceeded the
-              // initial limit. We don't know the absolute total here
-              // without a separate count, so we approximate: if we sliced
-              // exactly `limit` and there's any chance more exist, signal
-              // hasMore. Since the upstream doesn't expose totals, treat
-              // the page as having more whenever it filled the limit.
+            if (hasBefore) {
+              // Paginated request — hasMore if we filled the page.
               return pageSlice.length >= limit
             }
-            // Subsequent page: hasMore if we managed to fill the limit
-            // AND there might be even older messages (we don't know,
-            // but if we hit the limit, probably yes).
-            return pageSlice.length >= limit
+            // First page: the client decides what to do with the
+            // window. hasMore is true if the eligible window (post
+            // from-filter) is larger than what the client can show.
+            // Without an absolute total, we approximate: the server
+            // returns the full eligible range, so the client can
+            // always read the boundary. Signal hasMore iff the full
+            // window itself is at least `limit + 1` so the client has
+            // something to render as the "older" portion.
+            return pageSlice.length > limit
           })()
 
           return json({
@@ -340,6 +381,9 @@ export const Route = createFileRoute('/api/history')({
             sessionId: sessionKey,
             hasMore: pageHasMore,
             nextBefore: pageHasMore ? oldestInPage : undefined,
+            // Echo `from` so the client can pass it back on the next
+            // refetch to keep the window stable.
+            from: hasFrom ? fromTs : undefined,
             messages: pageSlice.map((message, index) => {
               // Local-tail messages are already in canonical
               // {role, content: [{type:'text', text}]} shape — just attach

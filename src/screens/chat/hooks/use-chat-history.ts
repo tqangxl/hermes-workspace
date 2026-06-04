@@ -345,9 +345,18 @@ export function useChatHistory({
         })
         : []
 
+      // Read the current oldest-known timestamp at fetch time so a
+      // background refetch (e.g. after the user sends a new message)
+      // still requests the same lower-bound window. Without this the
+      // server returns the latest N messages and we lose the boundary
+      // messages at the front of the previous page.
+      const oldestKnownTs = oldestKnownTsRef.current
+
       const serverData = await fetchHistory({
         sessionKey: sessionKeyForHistory,
         friendlyId: activeFriendlyId,
+        limit: 50,
+        ...(oldestKnownTs != null ? { from: oldestKnownTs } : {}),
       })
 
       let dataWithRecovery = serverData
@@ -419,6 +428,30 @@ export function useChatHistory({
   const [isLoadingOlder, setIsLoadingOlder] = useState(false)
   const [historyError2, setHistoryError2] = useState<unknown>(null)
 
+  // Ref-tracked oldest known timestamp across all loaded messages.
+  // The queryFn reads this on every fetch so subsequent refetches (e.g.
+  // after the user sends a new message) request the same lower-bound
+  // window from the server. Without this, refetching the initial page
+  // would slide the window forward and drop boundary messages.
+  const oldestKnownTsRef = useRef<number | null>(null)
+  const recomputeOldestKnownTs = useCallback(() => {
+    let oldest: number | null = null
+    const consider = (m: ChatMessage) => {
+      const ts = getMessageTimestamp(m)
+      if (typeof ts !== 'number' || !Number.isFinite(ts)) return
+      if (oldest == null || ts < oldest) oldest = ts
+    }
+    for (const m of olderMessages) consider(m)
+    // The historyMessages pool is the "current page" returned by the
+    // server. Its oldest member is what defines the lower bound for
+    // the next refetch, so include it in the oldest-known calculation.
+    const dataMsgs = Array.isArray(historyQuery.data?.messages)
+      ? historyQuery.data.messages
+      : []
+    for (const m of dataMsgs) consider(m)
+    oldestKnownTsRef.current = oldest
+  }, [historyQuery.data?.messages, olderMessages])
+
   // When the active session changes, drop the older-pages cache so we
   // don't render stale rows from a different session.
   useEffect(() => {
@@ -426,7 +459,15 @@ export function useChatHistory({
     setNextBefore(null)
     setIsLoadingOlder(false)
     setHistoryError2(null)
+    oldestKnownTsRef.current = null
   }, [activeFriendlyId, sessionKeyForHistory])
+
+  // After every change to olderMessages or historyMessages, refresh
+  // the oldest-known timestamp so the next refetch request preserves
+  // the loaded window.
+  useEffect(() => {
+    recomputeOldestKnownTs()
+  }, [recomputeOldestKnownTs])
 
   // Pull hasMore / nextBefore from the latest query response. The server
   // only emits these on the initial page (no `before` cursor); the
@@ -707,9 +748,26 @@ export function useChatHistory({
   // already in chronological order (oldest -> newest within each page),
   // and TanStack Query returns the initial page in chronological order
   // too, so the concatenation preserves order.
+  //
+  // CRITICAL: when a refetch happens (e.g. user sent a new message),
+  // the new historyMessages window may slide forward, excluding
+  // messages that were at the front of the previous page. We must
+  // keep those messages visible. The fix: dedup by id, and retain
+  // any olderMessages that are NOT in the new historyMessages pool
+  // (they live on as a "pinned" older prefix).
   const mergedHistoryMessages = useMemo(() => {
     if (olderMessages.length === 0) return historyMessages
-    return [...olderMessages, ...historyMessages]
+    const historyIds = new Set(
+      historyMessages
+        .map((m) => (m as { id?: string }).id)
+        .filter((id): id is string => typeof id === 'string'),
+    )
+    const olderNotInHistory = olderMessages.filter((m) => {
+      const id = (m as { id?: string }).id
+      return !id || !historyIds.has(id)
+    })
+    if (olderNotInHistory.length === 0) return historyMessages
+    return [...olderNotInHistory, ...historyMessages]
   }, [historyMessages, olderMessages])
 
   return {
