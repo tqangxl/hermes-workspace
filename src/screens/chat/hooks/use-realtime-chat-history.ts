@@ -492,6 +492,7 @@ export function useRealtimeChatHistory({
   > | null>(null)
   const activeSessionKeyRef = useRef(effectiveSessionKey)
   const isUnmountingRef = useRef(false)
+  const prevSessionKeyRef = useRef(effectiveSessionKey)
   activeSessionKeyRef.current = effectiveSessionKey
 
   useEffect(() => {
@@ -514,6 +515,18 @@ export function useRealtimeChatHistory({
       lastStreamClearTimeRef.current = Date.now()
     }
   }, [clearCompletedStreaming, streamingState])
+
+  // Immediate buffer clear on session switch: prevents stale messages from
+  // old session appearing while new session history is still loading.
+  // The 5s delayed cleanup (below) handles the case where history
+  // hasn't caught up yet; this handles the common case where history
+  // loads fast and we just need the old buffer gone immediately.
+  useEffect(() => {
+    const prevKey = prevSessionKeyRef.current
+    if (!prevKey || prevKey === 'new' || prevKey === effectiveSessionKey || effectiveSessionKey === 'new') return
+    prevSessionKeyRef.current = effectiveSessionKey
+    clearRealtimeBuffer(prevKey)
+  }, [effectiveSessionKey, clearRealtimeBuffer])
 
   // Merge history with real-time messages
   // Re-merge when realtime events arrive (lastEventAt changes)

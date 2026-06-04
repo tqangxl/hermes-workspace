@@ -370,6 +370,39 @@ export const Route = createFileRoute('/api/send-stream')({
           resolvedFriendlyId = sessionKey
         }
 
+        // Persist the user message IMMEDIATELY, before any async work, in
+        // BOTH portable and non-portable modes. This is the last-chance
+        // durability boundary: if anything below throws (network blip,
+        // gateway down, process kill), the user's message is already on
+        // disk. History reload will pick it up and rehydrate the UI.
+        //
+        // Also covers the non-portable path: previously, only the portable
+        // branch persisted to local-session-store, so a user message sent to
+        // a remote Claude/Gemini session could vanish on a hard refresh.
+        try {
+          ensureLocalSession(
+            sessionKey,
+            typeof body.model === 'string' ? body.model : undefined,
+          )
+          // Build the persisted content once, regardless of which branch
+          // ends up streaming the response.
+          const persistedUserContent = getChatMessage(message, attachments)
+          appendLocalMessage(sessionKey, {
+            id: crypto.randomUUID(),
+            role: 'user',
+            content:
+              typeof persistedUserContent === 'string'
+                ? persistedUserContent
+                : JSON.stringify(persistedUserContent),
+            timestamp: Date.now(),
+          })
+        } catch (persistErr) {
+          // Persistence is best-effort — never fail the user's send just
+          // because local cache is unwritable. The remote side still gets
+          // the message. Logged for ops visibility.
+          console.warn('[send-stream] failed to persist user message early:', persistErr)
+        }
+
         const workspaceScope = await loadWorkspaceCatalog().catch(() => null)
         const scopedMessage = buildWorkspaceScopedTextMessage(
           getChatMessage(message, attachments),
@@ -525,23 +558,21 @@ export const Route = createFileRoute('/api/send-stream')({
                   const localeSystemMsg: Array<OpenAICompatMessage> = locale && locale !== 'en'
                     ? [{ role: 'system', content: `Respond in ${locale === 'es' ? 'Spanish' : locale === 'fr' ? 'French' : locale === 'zh' ? 'Chinese' : locale === 'de' ? 'German' : locale === 'ja' ? 'Japanese' : locale === 'ko' ? 'Korean' : locale === 'pt' ? 'Portuguese' : locale === 'ru' ? 'Russian' : locale === 'ar' ? 'Arabic' : 'English'}. The user's interface is set to this language.` }]
                     : []
-                  // Load persisted history for this session, then append user message.
-                  // When the gateway can bind portable chat to a server-side session
-                  // via X-Hermes-Session-Id, replaying the entire local transcript on
-                  // every turn duplicates prompt context and can trip model limits
-                  // on otherwise simple tasks (#405).
+                  // Load persisted history for this session. The user
+                  // message is already persisted at the top of POST (before
+                  // any async work) so it survives process kills and gateway
+                  // outages. Do NOT append it again here — that previously
+                  // caused a duplicate user message in the local transcript.
+                  //
+                  // When the gateway can bind portable chat to a server-side
+                  // session via X-Hermes-Session-Id, replaying the entire
+                  // local transcript on every turn duplicates prompt context
+                  // and can trip model limits on otherwise simple tasks (#405).
                   const persistedMessages = getLocalMessages(portableSessionKey)
                   const persistedHistory = persistedMessages.map((m) => ({
                     role: m.role as 'user' | 'assistant' | 'system',
                     content: m.content,
                   }))
-                  // Persist user message AFTER reading history to avoid duplication
-                  appendLocalMessage(portableSessionKey, {
-                    id: crypto.randomUUID(),
-                    role: 'user',
-                    content: typeof body.message === 'string' ? body.message : '',
-                    timestamp: Date.now(),
-                  })
                   const effectiveHistory = selectPortableConversationHistory(
                     persistedHistory,
                     history,

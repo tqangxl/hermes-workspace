@@ -551,6 +551,24 @@ function sortMessagesChronologically(
     .sort((left, right) => {
       const byTime = compareMessagesByTime(left.message, right.message)
       if (byTime !== 0) return byTime
+      // Both messages lack a reliable timestamp — fall back to __realtimeSequence
+      // (assigned by the SSE handler for realtime messages, or assigned sequentially
+      // by mergeHistoryMessages for history messages). This is stable because
+      // __realtimeSequence is a monotonically increasing integer, unlike array index
+      // which is order-of-appearance in an arbitrarily merged array.
+      const leftSeq = getMessageRealtimeSequence(left.message)
+      const rightSeq = getMessageRealtimeSequence(right.message)
+      if (leftSeq !== undefined && rightSeq !== undefined) {
+        return leftSeq - rightSeq
+      }
+      // Still no sequence on either side — last resort: compare by text + role
+      // so messages with identical content always sort consistently.
+      const leftText = extractMessageText(left.message)
+      const rightText = extractMessageText(right.message)
+      const leftRole = left.message.role ?? ''
+      const rightRole = right.message.role ?? ''
+      if (leftRole !== rightRole) return leftRole.localeCompare(rightRole)
+      if (leftText !== rightText) return leftText.localeCompare(rightText)
       return left.index - right.index
     })
     .map(({ message }) => message)
@@ -1196,6 +1214,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const rtText = extractMessageText(rtMsg)
       const rtNonce = getClientNonce(rtMsg)
       const rtSignature = messageMultipartSignature(rtMsg)
+      const rtSequence = getMessageRealtimeSequence(rtMsg)
       const histId = getMessageId(histMsg)
       if (rtId && histId && rtId === histId) {
         return true
@@ -1203,6 +1222,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       const histNonce = getClientNonce(histMsg)
       if (rtNonce && histNonce && rtNonce === histNonce) {
+        return true
+      }
+
+      // Sequence-based dedup: if both messages carry the same realtime
+      // sequence number (assigned by the SSE handler), they're the same message.
+      // This catches cases where the SSE echo and history version differ only
+      // in metadata (different IDs, different timestamps) but originated from
+      // the same event.
+      const histSequence = getMessageRealtimeSequence(histMsg)
+      if (rtSequence !== undefined && histSequence !== undefined && rtSequence === histSequence) {
         return true
       }
 
@@ -1254,19 +1283,52 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const matchingRealtime = realtimeMessages.find((rtMsg) =>
         matchesRealtimeMessage(histMsg, rtMsg),
       )
-      if (!matchingRealtime) return histMsg
+      if (!matchingRealtime) {
+        // Give history messages a stable sort tiebreaker: assign __realtimeSequence
+        // based on their position in the history array (offset high enough that any
+        // real SSE sequence numbers sort first). This prevents array-index-based
+        // instability in sortMessagesChronologically when two history messages
+        // lack timestamps and IDs.
+        const existingSeq = getMessageRealtimeSequence(histMsg)
+        if (existingSeq === undefined) {
+          const raw = histMsg as Record<string, unknown>
+          const maxKnownSeq = realtimeMessages.reduce(
+            (max, m) => {
+              const s = getMessageRealtimeSequence(m)
+              return s !== undefined && s > max ? s : max
+            },
+            -1,
+          )
+          const histSeq =
+            (raw.__historyIndex as number | undefined) ??
+            historyMessages.indexOf(histMsg)
+          return {
+            ...histMsg,
+            __realtimeSequence: maxKnownSeq + 1 + histSeq,
+          } as ChatMessage
+        }
+        return histMsg
+      }
       // Preserve attachments from the optimistic/realtime message when history doesn't have them
       const merged = mergeRealtimeAssistantMetadata(histMsg, matchingRealtime)
       const rtAttachments = (matchingRealtime as any).attachments
       const histAttachments = (merged as any).attachments
+      // Transfer __realtimeSequence from SSE to history so the sort has a stable
+      // tiebreaker even when timestamps are missing or identical.
+      const rtSeq = getMessageRealtimeSequence(matchingRealtime)
+      const histSeq = getMessageRealtimeSequence(merged)
+      const mergedWithSeq =
+        rtSeq !== undefined && histSeq === undefined
+          ? ({ ...merged, __realtimeSequence: rtSeq } as ChatMessage)
+          : merged
       if (
         Array.isArray(rtAttachments) &&
         rtAttachments.length > 0 &&
         (!Array.isArray(histAttachments) || histAttachments.length === 0)
       ) {
-        return { ...merged, attachments: rtAttachments }
+        return { ...mergedWithSeq, attachments: rtAttachments }
       }
-      return merged
+      return mergedWithSeq
     })
 
     const newRealtimeMessages = realtimeMessages.filter(

@@ -104,22 +104,53 @@ export const Route = createFileRoute('/api/history')({
             messages = []
           }
 
-          // Fallback to local session store for portable/local model sessions
-          if (messages.length === 0) {
-            const localSession = getLocalSession(sessionKey)
-            if (localSession) {
-              const localMessages = getLocalMessages(sessionKey)
-              return json({
-                sessionKey,
-                sessionId: sessionKey,
-                messages: localMessages.map((m, index) => ({
+          // MERGE local tail into the response. The local cache is the
+          // most-recent persistence boundary (sync fsync on every
+          // appendLocalMessage). The remote session may not have caught
+          // up yet — especially right after the user hits Send and
+          // the process is briefly killed or the connection drops. If we
+          // returned only the remote transcript, any message that's in
+          // local but not yet committed remotely would silently vanish
+          // on reload.
+          //
+          // Dedup by message id (local ids are stable UUIDs assigned at
+          // write time). Sort by timestamp so the merged transcript is
+          // ordered the way the user typed it.
+          const localSession = getLocalSession(sessionKey)
+          if (localSession) {
+            const localMessages = getLocalMessages(sessionKey)
+            if (localMessages.length > 0) {
+              const remoteIds = new Set(
+                messages
+                  .map((m) => {
+                    const id = (m as Record<string, unknown>).id
+                    return typeof id === 'string' ? id : null
+                  })
+                  .filter((id): id is string => Boolean(id)),
+              )
+              const tailOnly = localMessages
+                .filter((m) => !remoteIds.has(m.id))
+                .map((m) => ({
                   id: m.id,
                   role: m.role,
                   content: [{ type: 'text', text: m.content }],
                   timestamp: m.timestamp,
-                  historyIndex: index,
-                })),
-              })
+                  // Tag so the frontend can render a "saved locally" hint
+                  __source: 'local-tail' as const,
+                }))
+
+              if (tailOnly.length > 0) {
+                const merged = [...messages, ...tailOnly].sort(
+                  (a, b) => {
+                    const aTs =
+                      typeof a.timestamp === 'number' ? a.timestamp : 0
+                    const bTs =
+                      typeof b.timestamp === 'number' ? b.timestamp : 0
+                    return aTs - bTs
+                  },
+                )
+                messages = merged as typeof messages
+              }
             }
           }
 

@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const DATA_DIR = join(process.cwd(), '.runtime')
 const SESSIONS_FILE = join(DATA_DIR, 'local-sessions.json')
+const SESSIONS_FILE_TMP = `${SESSIONS_FILE}.tmp`
 const MAX_MESSAGES_PER_SESSION = 500
 
 export type LocalSession = {
@@ -48,9 +49,17 @@ function loadFromDisk(): void {
 function saveToDisk(): void {
   try {
     if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true })
-    writeFileSync(SESSIONS_FILE, JSON.stringify(store, null, 2))
+    // Atomic write: write to a temp file, then rename. The rename is atomic
+    // on the same filesystem, so readers (or a process restart mid-write)
+    // always see either the old full file or the new full file — never a
+    // half-written one. writeFileSync opens, writes, and closes; closing
+    // the fd flushes kernel buffers to disk on most platforms.
+    const data = JSON.stringify(store, null, 2)
+    writeFileSync(SESSIONS_FILE_TMP, data)
+    renameSync(SESSIONS_FILE_TMP, SESSIONS_FILE)
   } catch {
-    // ignore cache write failures
+    // ignore cache write failures — caller's message is still in memory
+    // and the next appendLocalMessage call will retry the save.
   }
 }
 
@@ -127,14 +136,11 @@ export function appendLocalMessage(
     session.messageCount = store.messages[sessionId].length
     session.updatedAt = Date.now()
   }
-  scheduleSave()
-}
-
-let saveTimer: ReturnType<typeof setTimeout> | null = null
-function scheduleSave(): void {
-  if (saveTimer) return
-  saveTimer = setTimeout(() => {
-    saveTimer = null
-    saveToDisk()
-  }, 2000)
+  // SYNCHRONOUS SAVE — no debounce. The previous 2s debounce caused
+  // message loss when the process was killed or the user navigated away
+  // before the timer fired. The on-disk file is the source of truth for
+  // any future reload; if save fails, the in-memory copy is still
+  // returned by getLocalMessages, and the next appendLocalMessage call
+  // will retry the save.
+  saveToDisk()
 }
