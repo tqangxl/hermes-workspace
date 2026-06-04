@@ -14,7 +14,7 @@ import {
   shouldBindMainToPortableSession,
 } from '../../server/session-utils'
 import { isAuthenticated } from '@/server/auth-middleware'
-import { getLocalSession, getLocalMessages } from '../../server/local-session-store'
+import { getLocalSession, getLocalMessages, getLocalMessagesPage } from '../../server/local-session-store'
 
 /**
  * Normalize a local-cache message's `content` field into a content
@@ -107,7 +107,20 @@ export const Route = createFileRoute('/api/history')({
         }
         try {
           const url = new URL(request.url)
-          const limit = Number(url.searchParams.get('limit') || '200')
+          // limit=0 means "use the default" (50 for the first page, full
+          // for callers that explicitly pass limit=0 with a `before`
+          // cursor). Treat negative values as "use the default" too.
+          const limitParam = Number(url.searchParams.get('limit') || '50')
+          const limit =
+            Number.isFinite(limitParam) && limitParam > 0 ? limitParam : 50
+          // `before` is an opaque cursor — currently a millisecond
+          // timestamp. The server returns messages whose timestamp is
+          // strictly less than this value, in chronological order. If
+          // omitted, the server returns the most recent `limit` rows.
+          const beforeParam = url.searchParams.get('before')?.trim()
+          const beforeTs = beforeParam ? Number(beforeParam) : undefined
+          const hasBefore =
+            typeof beforeTs === 'number' && Number.isFinite(beforeTs)
           const rawSessionKey = url.searchParams.get('sessionKey')?.trim()
           const friendlyId = url.searchParams.get('friendlyId')?.trim()
           let { sessionKey } = await resolveSessionKey({
@@ -155,7 +168,14 @@ export const Route = createFileRoute('/api/history')({
           }
 
           if (pinPortableMain) {
-            const localMessages = getLocalMessages('main')
+            // Portable main: local-session-store is the source of truth.
+            // Use cursor-paginated read so the client can request older
+            // pages when the user scrolls to the top.
+            const page = getLocalMessagesPage('main', {
+              limit,
+              beforeTs: hasBefore ? beforeTs : undefined,
+            })
+            const sliced = page.messages
             return json({
               sessionKey: 'main',
               sessionId: 'main',
@@ -164,20 +184,57 @@ export const Route = createFileRoute('/api/history')({
               // them through toChatMessage() — it would re-wrap a
               // content array as a single text part, which the client
               // renders as "[object Object]" in the bubble.
-              messages: localMessages.map((m, index) => ({
+              messages: sliced.map((m, index) => ({
                 id: m.id,
                 role: m.role,
                 content: normalizeLocalContentToParts(m.content),
                 timestamp: m.timestamp,
                 historyIndex: index,
+                __moreBefore: page.hasMore ? true : undefined,
               })),
+              hasMore: page.hasMore,
+              // Echo the cursor so the client can verify the page
+              // boundaries. `nextBefore` is the timestamp the client
+              // should pass on the next `before=` request.
+              nextBefore:
+                page.hasMore && sliced.length > 0
+                  ? sliced[0].timestamp
+                  : undefined,
             })
           }
-          let messages: Awaited<ReturnType<typeof getMessages>> = []
+          let remoteMessages: Awaited<ReturnType<typeof getMessages>> = []
           try {
-            messages = await getMessages(sessionKey)
+            remoteMessages = await getMessages(sessionKey)
           } catch {
-            messages = []
+            remoteMessages = []
+          }
+
+          // For paginated requests, the upstream /api/sessions/:id/messages
+          // doesn't support cursors yet, so we have to fetch the full list
+          // and slice here. This is fine for typical chat sizes (a few
+          // hundred messages); if a session grows beyond that, add cursor
+          // support to the Hermes Agent /api/sessions endpoint.
+          let messages = remoteMessages
+          if (hasBefore) {
+            messages = messages
+              .filter((m) => {
+                const ts = (m as Record<string, unknown>).timestamp
+                return typeof ts === 'number' && ts < (beforeTs as number)
+              })
+              .sort(
+                (a, b) =>
+                  ((a as Record<string, unknown>).timestamp as number) -
+                  ((b as Record<string, unknown>).timestamp as number),
+              )
+            messages = messages.slice(-limit)
+          } else {
+            messages = messages
+              .sort(
+                (a, b) =>
+                  ((a as Record<string, unknown>).timestamp as number) -
+                  ((b as Record<string, unknown>).timestamp as number),
+              )
+              .slice(-limit)
           }
 
           // MERGE local tail into the response. The local cache is the
@@ -204,7 +261,11 @@ export const Route = createFileRoute('/api/history')({
           const localSession = getLocalSession(sessionKey)
           const alreadyCanonical: Array<Record<string, unknown>> = []
           if (localSession) {
-            const localMessages = getLocalMessages(sessionKey)
+            const localPage = getLocalMessagesPage(sessionKey, {
+              limit: 200,
+              beforeTs: hasBefore ? beforeTs : undefined,
+            })
+            const localMessages = localPage.messages
             if (localMessages.length > 0) {
               const remoteIds = new Set(
                 messages
@@ -247,12 +308,39 @@ export const Route = createFileRoute('/api/history')({
             }
           }
 
-          const boundedMessages = limit > 0 ? messages.slice(-limit) : messages
+          // hasMore / nextBefore mirror the portable path so the client
+          // can drive a uniform reverse-infinite-scroll UI regardless of
+          // whether the session is portable or backed by the remote
+          // Hermes Agent API.
+          const pageSlice = messages
+          const oldestInPage =
+            pageSlice.length > 0
+              ? ((pageSlice[0] as Record<string, unknown>).timestamp as
+                  | number
+                  | undefined) ?? undefined
+              : undefined
+          const pageHasMore = (() => {
+            if (!hasBefore) {
+              // First page: there's more if the total count exceeded the
+              // initial limit. We don't know the absolute total here
+              // without a separate count, so we approximate: if we sliced
+              // exactly `limit` and there's any chance more exist, signal
+              // hasMore. Since the upstream doesn't expose totals, treat
+              // the page as having more whenever it filled the limit.
+              return pageSlice.length >= limit
+            }
+            // Subsequent page: hasMore if we managed to fill the limit
+            // AND there might be even older messages (we don't know,
+            // but if we hit the limit, probably yes).
+            return pageSlice.length >= limit
+          })()
 
           return json({
             sessionKey,
             sessionId: sessionKey,
-            messages: boundedMessages.map((message, index) => {
+            hasMore: pageHasMore,
+            nextBefore: pageHasMore ? oldestInPage : undefined,
+            messages: pageSlice.map((message, index) => {
               // Local-tail messages are already in canonical
               // {role, content: [{type:'text', text}]} shape — just attach
               // historyIndex and ship them. Running them through
